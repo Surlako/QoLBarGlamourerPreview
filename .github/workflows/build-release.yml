@@ -108,7 +108,7 @@ jobs:
             LastUpdate = $timestamp
           }
 
-          @($entry) | ConvertTo-Json -Depth 10 | Set-Content ".\pluginmaster.json" -Encoding utf8
+          ConvertTo-Json -InputObject @($entry) -Depth 10 | Set-Content ".\pluginmaster.json" -Encoding utf8
 
       - name: Commit repository manifest
         shell: pwsh
