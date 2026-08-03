@@ -1,0 +1,22 @@
+{
+  "Author": "Steve",
+  "Name": "QoLBar Glamour Preview",
+  "Punchline": "Shows Glamourer Preview Manager images when hovering QoLBar outfit buttons.",
+  "Description": "Detects text shortcuts drawn inside QoLBar and displays the matching Glamourer Preview Manager screenshot as a hover preview. Use /qolglampreview for settings.",
+  "InternalName": "QoLBarGlamourPreview",
+  "AssemblyVersion": "0.1.0.0",
+  "RepoUrl": "https://github.com/Surlako/QoLBarGlamourerPreview",
+  "ApplicableVersion": "any",
+  "DalamudApiLevel": 15,
+  "Tags": [
+    "qolbar",
+    "glamourer",
+    "preview",
+    "glamour"
+  ],
+  "DownloadLinkInstall": "https://github.com/Surlako/QoLBarGlamourerPreview/releases/latest/download/latest.zip",
+  "DownloadLinkUpdate": "https://github.com/Surlako/QoLBarGlamourerPreview/releases/latest/download/latest.zip",
+  "IsHide": false,
+  "IsTestingExclusive": false,
+  "LastUpdate": "1785774714"
+}
