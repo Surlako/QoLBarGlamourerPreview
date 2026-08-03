@@ -1,0 +1,14 @@
+{
+  "Author": "Steve",
+  "Name": "QoLBar Glamour Preview",
+  "Punchline": "Shows Glamourer Preview Manager images when hovering QoLBar outfit buttons.",
+  "Description": "Detects text shortcuts drawn inside QoLBar and displays the matching Glamourer Preview Manager screenshot as a hover preview. Use /qolglampreview for settings.",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "qolbar",
+    "glamourer",
+    "preview",
+    "glamour"
+  ],
+  "InternalName": "QoLBarGlamourPreview"
+}
