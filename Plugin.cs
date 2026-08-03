@@ -13,7 +13,8 @@ namespace QoLBarGlamourPreview;
 
 public sealed class Plugin : IDalamudPlugin
 {
-    private const string CommandName = "/qolglampreview";
+    private const string CommandName = "/qgp";
+    private const string LegacyCommandName = "/qolglampreview";
 
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
@@ -42,10 +43,13 @@ public sealed class Plugin : IDalamudPlugin
         hooks = new ImGuiHookManager(this);
         hooks.Initialize();
 
-        CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
+        var commandInfo = new CommandInfo(OnCommand)
         {
             HelpMessage = "Open QoLBar Glamour Preview settings."
-        });
+        };
+
+        CommandManager.AddHandler(CommandName, commandInfo);
+        CommandManager.AddHandler(LegacyCommandName, commandInfo);
 
         PluginInterface.UiBuilder.Draw += Draw;
         PluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
@@ -56,6 +60,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw -= Draw;
         PluginInterface.UiBuilder.OpenConfigUi -= OpenConfig;
         CommandManager.RemoveHandler(CommandName);
+        CommandManager.RemoveHandler(LegacyCommandName);
         hooks.Dispose();
     }
 

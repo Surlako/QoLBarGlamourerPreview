@@ -2,6 +2,8 @@
 
 A Dalamud companion plugin that shows screenshots from **Glamourer Preview Manager (GPM)** when you hover matching text shortcuts in **QoLBar**.
 
+Settings command: **`/qgp`** (legacy alias: **`/qolglampreview`**).
+
 For example, hovering a QoLBar button named `Beach 2` displays the screenshot assigned to the Glamourer design named `Beach 2` in GPM.
 
 ## Requirements
@@ -35,7 +37,7 @@ You can also run:
 2. Enable Dalamud developer options if needed.
 3. Add the output folder containing `QoLBarGlamourPreview.dll` as a developer plugin location.
 4. Load **QoLBar Glamour Preview**.
-5. Open settings with `/qolglampreview`.
+5. Open settings with `/qgp` (legacy alias: `/qolglampreview`).
 
 ## How preview resolution works
 
