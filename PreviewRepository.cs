@@ -4,87 +4,157 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace QoLBarGlamourPreview;
 
-internal sealed class PreviewRepository
+internal sealed class PreviewRepository : IDisposable
 {
-    private static readonly string[] ImageExtensions = [".png", ".jpg", ".jpeg", ".webp", ".bmp"];
+    private static readonly HashSet<string> ImageExtensions = new(
+        [".png", ".jpg", ".jpeg", ".webp", ".bmp"],
+        StringComparer.OrdinalIgnoreCase);
     private static readonly Regex CopySuffixRegex = new(@"\s*\(\d+\)$", RegexOptions.Compiled);
+    private static readonly string CacheDirectory = Path.Combine(
+        Path.GetTempPath(),
+        "QoLBarGlamourPreviewCache");
 
     private readonly Configuration configuration;
-    private readonly Dictionary<string, string> previewsByDesign = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, (long LastWriteTicks, string CachePath)> cacheBustedPaths = new(StringComparer.OrdinalIgnoreCase);
-    private DateTime lastReloadUtc = DateTime.MinValue;
+    private readonly string pluginConfigRoot;
+    private readonly object reloadLock = new();
+    private readonly Dictionary<string, CacheEntry> cacheBustedPaths = new(StringComparer.OrdinalIgnoreCase);
 
-    public string PluginConfigRoot { get; private set; } = string.Empty;
-    public string GpmConfigurationFile { get; private set; } = string.Empty;
-    public string AllocationFile { get; private set; } = string.Empty;
-    public string DesignsDirectory { get; private set; } = string.Empty;
-    public string PreviewsDirectory { get; private set; } = string.Empty;
-    public string LastError { get; private set; } = string.Empty;
-    public int PreviewCount => previewsByDesign.Count;
+    private PreviewSnapshot snapshot = PreviewSnapshot.Empty;
+    private Task? reloadTask;
+    private DateTime lastReloadUtc = DateTime.MinValue;
+    private bool forceReloadPending;
+    private volatile bool disposed;
+
+    public string PluginConfigRoot => Volatile.Read(ref snapshot).PluginConfigRoot;
+    public string GpmConfigurationFile => Volatile.Read(ref snapshot).GpmConfigurationFile;
+    public string AllocationFile => Volatile.Read(ref snapshot).AllocationFile;
+    public string DesignsDirectory => Volatile.Read(ref snapshot).DesignsDirectory;
+    public string PreviewsDirectory => Volatile.Read(ref snapshot).PreviewsDirectory;
+    public string LastError => Volatile.Read(ref snapshot).LastError;
+    public int PreviewCount => Volatile.Read(ref snapshot).PreviewsByDesign.Count;
 
     public PreviewRepository(Configuration configuration)
     {
         this.configuration = configuration;
+        pluginConfigRoot = ResolvePluginConfigRoot();
+        CleanupCacheDirectory();
     }
 
     public void ForceReload()
     {
-        lastReloadUtc = DateTime.MinValue;
-        ReloadIfStale(true);
+        lock (reloadLock)
+            lastReloadUtc = DateTime.MinValue;
+
+        ReloadIfStale(force: true);
     }
 
     public bool TryGetPreview(string designName, out string texturePath)
     {
-        ReloadIfStale(false);
+        ReloadIfStale(force: false);
         texturePath = string.Empty;
 
-        if (!previewsByDesign.TryGetValue(designName, out var originalPath) || !File.Exists(originalPath))
+        var current = Volatile.Read(ref snapshot);
+        if (!current.PreviewsByDesign.TryGetValue(designName, out var originalPath))
             return false;
 
         texturePath = GetCacheBustedPath(originalPath);
-        return File.Exists(texturePath);
+        return !string.IsNullOrWhiteSpace(texturePath);
     }
 
     private void ReloadIfStale(bool force)
     {
-        var interval = TimeSpan.FromSeconds(Math.Clamp(configuration.RefreshIntervalSeconds, 1, 60));
-        if (!force && DateTime.UtcNow - lastReloadUtc < interval)
-            return;
+        var now = DateTime.UtcNow;
 
-        lastReloadUtc = DateTime.UtcNow;
-        Reload();
-    }
-
-    private void Reload()
-    {
-        previewsByDesign.Clear();
-        LastError = string.Empty;
-
-        try
+        lock (reloadLock)
         {
-            PluginConfigRoot = ResolvePluginConfigRoot();
-            GpmConfigurationFile = ResolveGpmConfigurationFile(PluginConfigRoot);
-            DesignsDirectory = Path.Combine(PluginConfigRoot, "Glamourer", "designs");
-            PreviewsDirectory = ResolvePreviewsDirectory(GpmConfigurationFile);
-            AllocationFile = ResolveAllocationFile(PluginConfigRoot, PreviewsDirectory);
+            if (disposed)
+                return;
 
-            if (string.IsNullOrWhiteSpace(PreviewsDirectory) || !Directory.Exists(PreviewsDirectory))
+            if (reloadTask is { IsCompleted: false })
             {
-                LastError = "GPM previews folder was not found. Configure it in GPM or set a manual folder here.";
+                forceReloadPending |= force;
                 return;
             }
 
-            var allocations = LoadAllocations(AllocationFile);
-            LoadAllocatedDesigns(allocations);
-            LoadFilenameFallbacks();
+            var interval = TimeSpan.FromSeconds(Math.Clamp(configuration.RefreshIntervalSeconds, 1, 60));
+            if (!force && now - lastReloadUtc < interval)
+                return;
+
+            lastReloadUtc = now;
+            StartReloadUnsafe();
+        }
+    }
+
+    private void StartReloadUnsafe()
+    {
+        reloadTask = Task.Run(() =>
+        {
+            var updated = BuildSnapshot();
+            if (!disposed)
+                Volatile.Write(ref snapshot, updated);
+
+            lock (reloadLock)
+            {
+                if (disposed || !forceReloadPending)
+                    return;
+
+                forceReloadPending = false;
+                lastReloadUtc = DateTime.UtcNow;
+                StartReloadUnsafe();
+            }
+        });
+    }
+
+    private PreviewSnapshot BuildSnapshot()
+    {
+        var previous = Volatile.Read(ref snapshot);
+
+        try
+        {
+            var gpmConfigurationFile = ResolveGpmConfigurationFile(pluginConfigRoot);
+            var designsDirectory = Path.Combine(pluginConfigRoot, "Glamourer", "designs");
+            var previewsDirectory = ResolvePreviewsDirectory(gpmConfigurationFile);
+            var allocationFile = ResolveAllocationFile(pluginConfigRoot, previewsDirectory);
+            var previewsByDesign = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+            if (string.IsNullOrWhiteSpace(previewsDirectory) || !Directory.Exists(previewsDirectory))
+            {
+                return new PreviewSnapshot(
+                    pluginConfigRoot,
+                    gpmConfigurationFile,
+                    allocationFile,
+                    designsDirectory,
+                    previewsDirectory,
+                    previewsByDesign,
+                    "GPM previews folder was not found. Configure it in GPM or set a manual folder here.");
+            }
+
+            var allocations = LoadAllocations(allocationFile);
+            LoadAllocatedDesigns(
+                allocations,
+                designsDirectory,
+                previewsDirectory,
+                previewsByDesign);
+            LoadFilenameFallbacks(previewsDirectory, previewsByDesign);
+
+            return new PreviewSnapshot(
+                pluginConfigRoot,
+                gpmConfigurationFile,
+                allocationFile,
+                designsDirectory,
+                previewsDirectory,
+                previewsByDesign,
+                string.Empty);
         }
         catch (Exception ex)
         {
-            LastError = ex.Message;
             Plugin.Log.Error(ex, "Failed to reload Glamourer preview mappings.");
+            return previous with { LastError = ex.Message };
         }
     }
 
@@ -128,10 +198,9 @@ internal sealed class PreviewRepository
             return string.Empty;
 
         using var document = JsonDocument.Parse(File.ReadAllText(gpmConfigurationFile));
-        if (TryGetStringProperty(document.RootElement, "PreviewsFolderPath", out var path))
-            return Environment.ExpandEnvironmentVariables(path);
-
-        return string.Empty;
+        return TryGetStringProperty(document.RootElement, "PreviewsFolderPath", out var path)
+            ? Environment.ExpandEnvironmentVariables(path)
+            : string.Empty;
     }
 
     private static string ResolveAllocationFile(string root, string previewsDirectory)
@@ -168,40 +237,44 @@ internal sealed class PreviewRepository
 
         foreach (var property in document.RootElement.EnumerateObject())
         {
-            if (Guid.TryParse(property.Name, out var id) && property.Value.ValueKind == JsonValueKind.String)
-            {
-                var value = property.Value.GetString();
-                if (!string.IsNullOrWhiteSpace(value))
-                    result[id] = value;
-            }
+            if (!Guid.TryParse(property.Name, out var id) || property.Value.ValueKind != JsonValueKind.String)
+                continue;
+
+            var value = property.Value.GetString();
+            if (!string.IsNullOrWhiteSpace(value))
+                result[id] = value;
         }
 
         return result;
     }
 
-    private void LoadAllocatedDesigns(Dictionary<Guid, string> allocations)
+    private static void LoadAllocatedDesigns(
+        IReadOnlyDictionary<Guid, string> allocations,
+        string designsDirectory,
+        string previewsDirectory,
+        IDictionary<string, string> previewsByDesign)
     {
-        if (!Directory.Exists(DesignsDirectory))
+        if (!Directory.Exists(designsDirectory))
             return;
 
-        var previewsRoot = Path.GetFullPath(PreviewsDirectory)
+        var previewsRoot = Path.GetFullPath(previewsDirectory)
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
 
-        foreach (var file in Directory.EnumerateFiles(DesignsDirectory, "*.json", SearchOption.TopDirectoryOnly))
+        foreach (var file in Directory.EnumerateFiles(designsDirectory, "*.json", SearchOption.TopDirectoryOnly))
         {
-            if (!Guid.TryParse(Path.GetFileNameWithoutExtension(file), out var id))
-                continue;
-            if (!allocations.TryGetValue(id, out var relativeImage))
+            if (!Guid.TryParse(Path.GetFileNameWithoutExtension(file), out var id) ||
+                !allocations.TryGetValue(id, out var relativeImage))
                 continue;
 
-            var imagePath = Path.GetFullPath(Path.Combine(PreviewsDirectory, relativeImage));
+            var imagePath = Path.GetFullPath(Path.Combine(previewsDirectory, relativeImage));
             if (!imagePath.StartsWith(previewsRoot, StringComparison.OrdinalIgnoreCase) || !File.Exists(imagePath))
                 continue;
 
             try
             {
                 using var document = JsonDocument.Parse(File.ReadAllText(file));
-                if (TryGetStringProperty(document.RootElement, "Name", out var name) && !string.IsNullOrWhiteSpace(name))
+                if (TryGetStringProperty(document.RootElement, "Name", out var name) &&
+                    !string.IsNullOrWhiteSpace(name))
                     previewsByDesign[name.Trim()] = imagePath;
             }
             catch (Exception ex)
@@ -211,16 +284,18 @@ internal sealed class PreviewRepository
         }
     }
 
-    private void LoadFilenameFallbacks()
+    private static void LoadFilenameFallbacks(
+        string previewsDirectory,
+        IDictionary<string, string> previewsByDesign)
     {
-        foreach (var image in Directory.EnumerateFiles(PreviewsDirectory, "*", SearchOption.TopDirectoryOnly))
+        foreach (var image in Directory.EnumerateFiles(previewsDirectory, "*", SearchOption.TopDirectoryOnly))
         {
-            if (!ImageExtensions.Contains(Path.GetExtension(image), StringComparer.OrdinalIgnoreCase))
+            if (!ImageExtensions.Contains(Path.GetExtension(image)))
                 continue;
 
             var name = CopySuffixRegex.Replace(Path.GetFileNameWithoutExtension(image), string.Empty).Trim();
-            if (!string.IsNullOrWhiteSpace(name))
-                previewsByDesign.TryAdd(name, image);
+            if (!string.IsNullOrWhiteSpace(name) && !previewsByDesign.ContainsKey(name))
+                previewsByDesign[name] = image;
         }
     }
 
@@ -232,7 +307,8 @@ internal sealed class PreviewRepository
 
         foreach (var property in element.EnumerateObject())
         {
-            if (!property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase) || property.Value.ValueKind != JsonValueKind.String)
+            if (!property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase) ||
+                property.Value.ValueKind != JsonValueKind.String)
                 continue;
 
             value = property.Value.GetString() ?? string.Empty;
@@ -246,29 +322,42 @@ internal sealed class PreviewRepository
     {
         try
         {
-            var lastWriteTicks = File.GetLastWriteTimeUtc(originalPath).Ticks;
-            if (cacheBustedPaths.TryGetValue(originalPath, out var cached) &&
-                cached.LastWriteTicks == lastWriteTicks && File.Exists(cached.CachePath))
-                return cached.CachePath;
+            var now = DateTime.UtcNow;
+            if (cacheBustedPaths.TryGetValue(originalPath, out var cached) && now < cached.NextCheckUtc)
+                return cached.Exists ? cached.CachePath : string.Empty;
 
-            var cacheDirectory = Path.Combine(Path.GetTempPath(), "QoLBarGlamourPreviewCache");
-            Directory.CreateDirectory(cacheDirectory);
+            var nextCheck = now.AddSeconds(Math.Clamp(configuration.RefreshIntervalSeconds, 1, 60));
+            if (!File.Exists(originalPath))
+            {
+                cacheBustedPaths[originalPath] = new CacheEntry(0, string.Empty, nextCheck, false);
+                return string.Empty;
+            }
+
+            var lastWriteTicks = File.GetLastWriteTimeUtc(originalPath).Ticks;
+            if (cached.Exists &&
+                cached.LastWriteTicks == lastWriteTicks &&
+                File.Exists(cached.CachePath))
+            {
+                cacheBustedPaths[originalPath] = cached with { NextCheckUtc = nextCheck };
+                return cached.CachePath;
+            }
+
+            Directory.CreateDirectory(CacheDirectory);
 
             var fileName = Path.GetFileNameWithoutExtension(originalPath);
             var extension = Path.GetExtension(originalPath);
             var pathHash = StringComparer.OrdinalIgnoreCase.GetHashCode(Path.GetDirectoryName(originalPath) ?? string.Empty);
-            var cachePath = Path.Combine(cacheDirectory, $"qgp_{pathHash:X8}_{fileName}_{lastWriteTicks}{extension}");
+            var cachePath = Path.Combine(CacheDirectory, $"qgp_{pathHash:X8}_{fileName}_{lastWriteTicks}{extension}");
 
             if (!File.Exists(cachePath))
                 File.Copy(originalPath, cachePath, true);
 
-            if (cacheBustedPaths.TryGetValue(originalPath, out var old) &&
-                !old.CachePath.Equals(cachePath, StringComparison.OrdinalIgnoreCase))
+            if (cached.Exists && !cached.CachePath.Equals(cachePath, StringComparison.OrdinalIgnoreCase))
             {
-                try { File.Delete(old.CachePath); } catch { }
+                try { File.Delete(cached.CachePath); } catch { }
             }
 
-            cacheBustedPaths[originalPath] = (lastWriteTicks, cachePath);
+            cacheBustedPaths[originalPath] = new CacheEntry(lastWriteTicks, cachePath, nextCheck, true);
             return cachePath;
         }
         catch (Exception ex)
@@ -276,5 +365,51 @@ internal sealed class PreviewRepository
             Plugin.Log.Verbose(ex, "Could not cache-bust a preview image.");
             return originalPath;
         }
+    }
+
+    private static void CleanupCacheDirectory()
+    {
+        try
+        {
+            if (!Directory.Exists(CacheDirectory))
+                return;
+
+            foreach (var file in Directory.EnumerateFiles(CacheDirectory, "qgp_*", SearchOption.TopDirectoryOnly))
+            {
+                try { File.Delete(file); } catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Verbose(ex, "Could not clean the QoLBar preview cache.");
+        }
+    }
+
+    public void Dispose()
+        => disposed = true;
+
+    private readonly record struct CacheEntry(
+        long LastWriteTicks,
+        string CachePath,
+        DateTime NextCheckUtc,
+        bool Exists);
+
+    private sealed record PreviewSnapshot(
+        string PluginConfigRoot,
+        string GpmConfigurationFile,
+        string AllocationFile,
+        string DesignsDirectory,
+        string PreviewsDirectory,
+        IReadOnlyDictionary<string, string> PreviewsByDesign,
+        string LastError)
+    {
+        public static PreviewSnapshot Empty { get; } = new(
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            string.Empty,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            string.Empty);
     }
 }

@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Numerics;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Game.Command;
@@ -25,9 +24,10 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Configuration configuration;
     private readonly PreviewRepository repository;
     private readonly ImGuiHookManager hooks;
-    private readonly Stack<string> windowStack = new();
+    private readonly Stack<bool> windowStack = new();
 
     private int windowStackFrame = -1;
+    private int qolBarWindowDepth;
     private string hoveredDesignName = string.Empty;
     private int hoveredFrame = -100;
     private DateTime hoveredSinceUtc = DateTime.MinValue;
@@ -62,39 +62,40 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(CommandName);
         CommandManager.RemoveHandler(LegacyCommandName);
         hooks.Dispose();
+        repository.Dispose();
     }
 
     internal void SetHookError(string message) => hookError = message;
 
-    internal void OnBeginWindow(string name)
+    internal bool ShouldInspectButton
     {
-        var currentFrame = (int)ImGui.GetFrameCount();
-        if (currentFrame != windowStackFrame)
+        get
         {
-            windowStackFrame = currentFrame;
-            windowStack.Clear();
+            EnsureWindowFrame();
+            return configuration.Enabled && qolBarWindowDepth > 0;
         }
+    }
 
-        windowStack.Push(name);
+    internal void OnBeginWindow(bool isQoLBarWindow)
+    {
+        EnsureWindowFrame();
+
+        windowStack.Push(isQoLBarWindow);
+        if (isQoLBarWindow)
+            qolBarWindowDepth++;
     }
 
     internal void OnEndWindow()
     {
-        var currentFrame = (int)ImGui.GetFrameCount();
-        if (currentFrame != windowStackFrame)
-        {
-            windowStackFrame = currentFrame;
-            windowStack.Clear();
-            return;
-        }
+        EnsureWindowFrame();
 
-        if (windowStack.Count > 0)
-            windowStack.Pop();
+        if (windowStack.TryPop(out var wasQoLBarWindow) && wasQoLBarWindow && qolBarWindowDepth > 0)
+            qolBarWindowDepth--;
     }
 
     internal void OnButtonDrawn(string label)
     {
-        if (!configuration.Enabled || !IsInsideQoLBar() || !ImGui.IsItemHovered(ImGuiHoveredFlags.RectOnly))
+        if (!ShouldInspectButton)
             return;
 
         var cleanName = CleanButtonLabel(label);
@@ -111,9 +112,16 @@ public sealed class Plugin : IDalamudPlugin
         hoveredFrame = currentFrame;
     }
 
-    private bool IsInsideQoLBar() => windowStack.Any(name =>
-        name.StartsWith("QoLBar##", StringComparison.Ordinal) ||
-        name.Equals("QoLBar", StringComparison.Ordinal));
+    private void EnsureWindowFrame()
+    {
+        var currentFrame = (int)ImGui.GetFrameCount();
+        if (currentFrame == windowStackFrame)
+            return;
+
+        windowStackFrame = currentFrame;
+        windowStack.Clear();
+        qolBarWindowDepth = 0;
+    }
 
     private static string CleanButtonLabel(string label)
     {

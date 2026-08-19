@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using Dalamud.Bindings.ImGui;
 using Dalamud.Hooking;
 
 namespace QoLBarGlamourPreview;
@@ -116,6 +117,10 @@ internal sealed class ImGuiHookManager : IDisposable
     {
         try
         {
+            if (!plugin.ShouldInspectButton ||
+                !ImGui.IsItemHovered(ImGuiHoveredFlags.RectOnly))
+                return;
+
             var label = Marshal.PtrToStringUTF8(labelPointer);
             if (!string.IsNullOrWhiteSpace(label))
                 plugin.OnButtonDrawn(label);
@@ -130,7 +135,7 @@ internal sealed class ImGuiHookManager : IDisposable
     {
         try
         {
-            plugin.OnBeginWindow(Marshal.PtrToStringUTF8(namePointer) ?? string.Empty);
+            plugin.OnBeginWindow(IsQoLBarWindow(namePointer));
         }
         catch (Exception ex)
         {
@@ -138,6 +143,22 @@ internal sealed class ImGuiHookManager : IDisposable
         }
 
         return beginHook is not null ? beginHook.Original(namePointer, openPointer, flags) : (byte)0;
+    }
+
+    private static bool IsQoLBarWindow(IntPtr namePointer)
+    {
+        if (namePointer == IntPtr.Zero)
+            return false;
+
+        ReadOnlySpan<byte> prefix = "QoLBar"u8;
+        for (var index = 0; index < prefix.Length; index++)
+        {
+            if (Marshal.ReadByte(namePointer, index) != prefix[index])
+                return false;
+        }
+
+        var suffix = Marshal.ReadByte(namePointer, prefix.Length);
+        return suffix == 0 || suffix == (byte)'#';
     }
 
     private void EndDetour()
