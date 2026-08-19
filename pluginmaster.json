@@ -5,7 +5,7 @@
     "Punchline": "Shows Glamourer Preview Manager images when hovering QoLBar outfit buttons.",
     "Description": "Detects text shortcuts drawn inside QoLBar and displays the matching Glamourer Preview Manager screenshot as a hover preview. Use /qgp for settings (legacy alias: /qolglampreview).",
     "InternalName": "QoLBarGlamourPreview",
-    "AssemblyVersion": "0.1.1.0",
+    "AssemblyVersion": "0.1.2.0",
     "RepoUrl": "https://github.com/Surlako/QoLBarGlamourerPreview",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -15,10 +15,10 @@
       "preview",
       "glamour"
     ],
-    "DownloadLinkInstall": "https://github.com/Surlako/QoLBarGlamourerPreview/releases/latest/download/latest.zip",
-    "DownloadLinkUpdate": "https://github.com/Surlako/QoLBarGlamourerPreview/releases/latest/download/latest.zip",
+    "DownloadLinkInstall": "https://github.com/Surlako/QoLBarGlamourerPreview/releases/download/v0.1.2.0/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/Surlako/QoLBarGlamourerPreview/releases/download/v0.1.2.0/latest.zip",
     "IsHide": false,
     "IsTestingExclusive": false,
-    "LastUpdate": "1785797603"
+    "LastUpdate": "1787148347"
   }
 ]
