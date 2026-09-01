@@ -1,0 +1,8 @@
+bin/
+obj/
+.vs/
+.idea/
+*.suo
+*.user
+*.csproj.user
+packages.lock.json

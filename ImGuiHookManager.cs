@@ -78,26 +78,42 @@ internal sealed class ImGuiHookManager : IDisposable
             endHook = Plugin.GameInteropProvider.HookFromAddress<EndDelegate>(endAddress, EndDetour);
             endHook.Enable();
 
+            plugin.SetHookError(string.Empty);
             Plugin.Log.Information("QoLBar Glamour Preview native hooks initialized.");
         }
         catch (Exception ex)
         {
+            DisposeHooks();
             Plugin.Log.Error(ex, "Failed to initialize QoLBar Glamour Preview native hooks.");
             plugin.SetHookError(ex.Message);
         }
     }
 
-    public void Dispose()
+    private void DisposeHooks()
     {
-        buttonHook?.Dispose();
-        buttonHook = null;
-        buttonExHook?.Dispose();
-        buttonExHook = null;
-        beginHook?.Dispose();
-        beginHook = null;
-        endHook?.Dispose();
+        TryDisposeHook(endHook, "igEnd");
         endHook = null;
+        TryDisposeHook(beginHook, "igBegin");
+        beginHook = null;
+        TryDisposeHook(buttonExHook, "igButtonEx");
+        buttonExHook = null;
+        TryDisposeHook(buttonHook, "igButton");
+        buttonHook = null;
     }
+
+    private static void TryDisposeHook(IDisposable? hook, string name)
+    {
+        try
+        {
+            hook?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.Warning(ex, "Could not dispose the {HookName} hook.", name);
+        }
+    }
+
+    public void Dispose() => DisposeHooks();
 
     private byte ButtonDetour(IntPtr labelPointer, Vector2 size)
     {

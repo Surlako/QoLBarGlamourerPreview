@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3.0
+
+- Cleans up every native hook if initialization fails partway through.
+- Clears stale hook-error diagnostics after a successful initialization.
+- Adds standard build-output exclusions for local development.
+
 ## 0.1.2.0
 
 - Converts button labels only for hovered buttons currently inside QoLBar.
